@@ -2,11 +2,7 @@ use core::ops::Deref;
 
 pub(crate) use atomic16::assign_pid;
 use embassy_futures::select::{select, select3, Either};
-use embassy_net::{
-    dns::DnsQueryType,
-    tcp::{TcpReader, TcpSocket, TcpWriter},
-    Stack,
-};
+use embassy_net::{dns::DnsQueryType, tcp::{TcpReader, TcpSocket, TcpWriter}, IpAddress, IpEndpoint, Ipv4Address, Stack};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
     mutex::Mutex,
@@ -28,22 +24,7 @@ use mqttrs::{
     QosPid,
 };
 
-use crate::{
-    device_id,
-    fmt::Debug2Format,
-    Buffer,
-    ControlMessage,
-    Error,
-    MqttMessage,
-    Payload,
-    Publishable,
-    Topic,
-    TopicString,
-    CONFIRMATION_TIMEOUT,
-    DATA_CHANNEL,
-    DEFAULT_BACKOFF,
-    RESET_BACKOFF,
-};
+use crate::{device_id, fmt::Debug2Format, Buffer, ControlMessage, Error, IpDn, MqttMessage, Payload, Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DATA_CHANNEL, DEFAULT_BACKOFF, RESET_BACKOFF};
 
 static WRITE_BUFFER: Mutex<CriticalSectionRawMutex, Buffer<4096>> = Mutex::new(Buffer::new());
 static WRITE_PENDING: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -212,7 +193,7 @@ where
     L: Publishable + 't,
 {
     pub(crate) network: Stack<'t>,
-    pub(crate) broker: &'t str,
+    pub(crate) broker: IpDn<'t>,
     pub(crate) last_will: Option<L>,
     pub(crate) username: Option<&'t str>,
     pub(crate) password: Option<&'t str>,
@@ -463,26 +444,15 @@ where
                 trace!("Network configured.");
             }
 
-            let ip_addrs = match self.network.dns_query(self.broker, DnsQueryType::A).await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Failed to lookup '{}' for broker: {:?}", self.broker, e);
-                    continue;
-                }
-            };
-
-            let ip = match ip_addrs.first() {
-                Some(i) => *i,
-                None => {
-                    error!("No IP address found for broker '{}'", self.broker);
-                    continue;
-                }
-            };
-
-            trace!("Connecting to {}:1883", ip);
+            let ip_addrs = self.network.dns_query(self.broker.hostname, DnsQueryType::A).await;
+            let ip = ip_addrs.inspect_err(|e| error!("address {} error {:?}", self.broker.hostname, e))
+                .ok().and_then(|ip_addrs| *ip_addrs.first())
+                .unwrap_or(self.broker.back_ip);
+            let ip = IpEndpoint::new(ip, self.broker.port);
+            trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
-            if let Err(e) = socket.connect((ip, 1883)).await {
+            if let Err(e) = socket.connect(ip).await {
                 error!("Failed to connect to {}:1883: {:?}", ip, e);
                 continue;
             }

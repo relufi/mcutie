@@ -7,7 +7,7 @@
 use core::{ops::Deref, str};
 
 pub use buffer::Buffer;
-use embassy_net::{HardwareAddress, Stack};
+use embassy_net::{HardwareAddress, IpAddress, Stack};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use heapless::String;
 pub use io::McutieTask;
@@ -101,6 +101,14 @@ impl McutieReceiver {
     }
 }
 
+#[derive(Clone)]
+pub struct IpDn<'t>{
+    pub hostname: &'t str,
+    pub port: u16,
+    pub back_ip: IpAddress,
+}
+
+
 /// A builder to configure the MQTT stack.
 pub struct McutieBuilder<'t, T, L, const S: usize>
 where
@@ -110,7 +118,7 @@ where
     network: Stack<'t>,
     device_type: &'t str,
     device_id: Option<&'t str>,
-    broker: &'t str,
+    broker: IpDn<'t>,
     last_will: Option<L>,
     username: Option<&'t str>,
     password: Option<&'t str>,
@@ -122,7 +130,7 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't> McutieBuilder<'t, T, 
     ///
     /// `device_type` is expected to be the same for all devices of the same type.
     /// `broker` may be an IP address or a DNS name for the broker to connect to.
-    pub fn new(network: Stack<'t>, device_type: &'t str, broker: &'t str) -> Self {
+    pub fn new(network: Stack<'t>, device_type: &'t str, broker: IpDn<'t>) -> Self {
         Self {
             network,
             device_type,
