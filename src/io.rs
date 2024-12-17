@@ -461,6 +461,8 @@ where
             trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
+            socket.set_timeout(Some(embassy_time::Duration::from_secs(45)));
+            socket.set_keep_alive(Some(embassy_time::Duration::from_secs(15)));
             if let Err(e) = socket.connect(ip).await {
                 error!("Failed to connect to {}:1883: {:?}", ip, e);
                 continue;
