@@ -1,6 +1,6 @@
 //! Tools for publishing a [Home Assistant light](https://www.home-assistant.io/integrations/light.mqtt/).
 use core::{ops::Deref, str};
-
+use log::{trace, warn};
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 use crate::{

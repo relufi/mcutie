@@ -11,6 +11,7 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use embedded_io_async::Write;
+use log::{error,trace,warn,debug};
 use mqttrs::{
     decode_slice,
     Connect,
@@ -445,8 +446,7 @@ where
             }
 
             let ip_addrs = self.network.dns_query(self.broker.hostname, DnsQueryType::A).await;
-            let ip = ip_addrs.inspect_err(|e| error!("address {} error {:?}", self.broker.hostname, e))
-                .ok().and_then(|ip_addrs| *ip_addrs.first())
+            let ip = ip_addrs.ok().and_then(|ip_addrs| *ip_addrs.first())
                 .unwrap_or(self.broker.back_ip);
             let ip = IpEndpoint::new(ip, self.broker.port);
             trace!("Connecting to {}", ip);
@@ -457,7 +457,7 @@ where
                 continue;
             }
 
-            info!("Connected to {}", self.broker);
+            // info!("Connected to {}", self.broker);
             timeout = Some(RESET_BACKOFF);
 
             let (reader, writer) = socket.split();
