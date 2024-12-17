@@ -446,7 +446,7 @@ where
             }
 
             let ip_addrs = self.network.dns_query(self.broker.hostname, DnsQueryType::A).await;
-            let ip = ip_addrs.ok().and_then(|ip_addrs| *ip_addrs.first())
+            let ip = ip_addrs.ok().and_then(|mut ip_addrs| ip_addrs.pop())
                 .unwrap_or(self.broker.back_ip);
             let ip = IpEndpoint::new(ip, self.broker.port);
             trace!("Connecting to {}", ip);
