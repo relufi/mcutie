@@ -243,6 +243,10 @@ where
                     Some(len) => len,
                     None => {
                         // None is returned when there is not yet enough data to decode a packet.
+                        if start_pos != 0 {
+                            buffer.copy_within(start_pos..cursor, 0);
+                            cursor = cursor - start_pos;
+                        }
                         break;
                     }
                 };
