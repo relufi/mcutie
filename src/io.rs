@@ -294,7 +294,7 @@ where
                         ) {
                             (Ok(topic), Ok(payload)) => {
                                 if !self.ha_handle_update(&topic, &payload).await {
-                                    log::info!("Published message handle start");
+                                    // log::info!("Published message handle start");
                                     DATA_CHANNEL
                                         .send(MqttMessage::Publish(topic, payload))
                                         .await;
@@ -316,9 +316,9 @@ where
                         }
                     }
                     Packet::Puback(pid) => {
-                        log::info!("Published message start pid {}",pid.get());
+                        // log::info!("Published message start pid {}",pid.get());
                         controller.publish_immediate(ControlMessage::Published(pid));
-                        log::info!("Published message end pid {}",pid.get());
+                        // log::info!("Published message end pid {}",pid.get());
                     }
                     Packet::Pubrec(pid) => {
                         controller.publish_immediate(ControlMessage::Published(pid));
