@@ -11,7 +11,7 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 use embedded_io_async::Write;
-use log::{error,trace,warn,debug};
+// use log::{error,trace,warn,debug};
 use mqttrs::{
     decode_slice,
     Connect,
@@ -76,22 +76,22 @@ mod atomic16 {
 
 pub(crate) async fn send_packet(packet: Packet<'_>) -> Result<(), Error> {
     loop {
-        trace!("Waiting for data to be written");
+        // trace!("Waiting for data to be written");
         WRITE_COMPLETE.wait().await;
 
         {
             let mut buffer = WRITE_BUFFER.lock().await;
-            trace!("Encoding packet");
+            // trace!("Encoding packet");
 
             match buffer.encode_packet(&packet) {
                 Ok(()) => {
-                    trace!("Signaling data ready");
+                    // trace!("Signaling data ready");
                     WRITE_PENDING.signal(());
                     return Ok(());
                 }
                 Err(mqttrs::Error::WriteZero) => {}
                 Err(_) => {
-                    error!("Failed to send packet");
+                    // error!("Failed to send packet");
                     return Err(Error::PacketError);
                 }
             }
@@ -218,26 +218,26 @@ where
         let controller = CONTROL_CHANNEL.immediate_publisher();
 
         loop {
-            trace!("socket read data start {}",cursor);
+            // trace!("socket read data start {}",cursor);
             match reader.read(&mut buffer[cursor..]).await {
                 Ok(0) => {
-                    error!("Receive socket closed");
+                    // error!("Receive socket closed");
                     return Ok(());
                 }
                 Ok(len) => {
                     cursor += len;
                 }
                 Err(_) => {
-                    error!("I/O failure reading packet");
+                    // error!("I/O failure reading packet");
                     return Err(Error::IOError);
                 }
             }
-            trace!("Received {} bytes", cursor);
+            // trace!("Received {} bytes", cursor);
             let mut start_pos = 0;
             loop {
                 let packet_length = match packet_size(&buffer[start_pos..cursor]) {
                     Some(0) => {
-                        error!("Invalid MQTT packet");
+                        // error!("Invalid MQTT packet");
                         return Err(Error::PacketError);
                     }
                     Some(len) => len,
@@ -246,23 +246,23 @@ where
                         break;
                     }
                 };
-                trace!("Received packet_length cursor: {},start_pos: {},packet_length: {}",cursor,start_pos, packet_length);
+                // trace!("Received packet_length cursor: {},start_pos: {},packet_length: {}",cursor,start_pos, packet_length);
                 let packet = match decode_slice(&buffer[start_pos..(start_pos + packet_length)]) {
                     Ok(Some(p)) => p,
                     Ok(None) => {
-                        error!("Packet length calculation failed.");
+                        // error!("Packet length calculation failed.");
                         return Err(Error::PacketError);
                     }
                     Err(_) => {
-                        error!("Invalid MQTT packet");
+                        // error!("Invalid MQTT packet");
                         return Err(Error::PacketError);
                     }
                 };
 
-                trace!(
-                    "Received packet from broker: {:?}",
-                    Debug2Format(&packet.get_type())
-                );
+                // trace!(
+                //     "Received packet from broker: {:?}",
+                //     Debug2Format(&packet.get_type())
+                // );
 
                 match packet {
                     Packet::Connack(connack) => match connack.code {
@@ -277,7 +277,7 @@ where
                             DATA_CHANNEL.send(MqttMessage::Connected).await;
                         }
                         _ => {
-                            error!("Connection request to broker was not accepted");
+                            // error!("Connection request to broker was not accepted");
                             return Err(Error::IOError);
                         }
                     },
@@ -297,7 +297,7 @@ where
                                 }
                             }
                             _ => {
-                                error!("Unable to process publish data as it was too large");
+                                // error!("Unable to process publish data as it was too large");
                             }
                         }
 
@@ -330,7 +330,7 @@ where
                                 *return_code,
                             ));
                         } else {
-                            warn!("Unexpected suback with no return codes");
+                            // warn!("Unexpected suback with no return codes");
                         }
                     }
                     Packet::Unsuback(pid) => {
@@ -342,10 +342,10 @@ where
                     | Packet::Pingreq
                     | Packet::Unsubscribe(_)
                     | Packet::Disconnect => {
-                        debug!(
-                        "Unexpected packet from broker: {:?}",
-                        Debug2Format(&packet.get_type())
-                    );
+                        //     debug!(
+                        //     "Unexpected packet from broker: {:?}",
+                        //     Debug2Format(&packet.get_type())
+                        // );
                     }
                 }
                 start_pos = start_pos + packet_length;
@@ -396,12 +396,12 @@ where
                 }))
                 .is_err()
             {
-                error!("Failed to encode connection packet");
+                // error!("Failed to encode connection packet");
                 return;
             }
 
-            if let Err(e) = writer.write_all(&buffer).await {
-                error!("Failed to send connection packet: {:?}", e);
+            if let Err(_e) = writer.write_all(&buffer).await {
+                // error!("Failed to send connection packet: {:?}", e);
                 return;
             }
 
@@ -411,23 +411,23 @@ where
         }
 
         loop {
-            trace!("Writer waiting for data");
+            // trace!("Writer waiting for data");
             WRITE_PENDING.wait().await;
 
             {
                 let mut buffer = WRITE_BUFFER.lock().await;
                 WRITE_PENDING.reset();
-                trace!("Writer locked data");
+                // trace!("Writer locked data");
 
-                if let Err(e) = writer.write_all(&buffer).await {
-                    error!("Failed to send data: {:?}", e);
+                if let Err(_e) = writer.write_all(&buffer).await {
+                    // error!("Failed to send data: {:?}", e);
                     return;
                 }
 
                 buffer.reset();
             }
 
-            trace!("Writer signaling completion");
+            // trace!("Writer signaling completion");
             WRITE_COMPLETE.signal(());
         }
     }
@@ -445,20 +445,20 @@ where
             }
 
             if !self.network.is_config_up() {
-                trace!("Waiting for network to configure.");
+                // trace!("Waiting for network to configure.");
                 self.network.wait_config_up().await;
-                trace!("Network configured.");
+                // trace!("Network configured.");
             }
 
             let ip_addrs = self.network.dns_query(self.broker.hostname, DnsQueryType::A).await;
             let ip = ip_addrs.ok().and_then(|mut ip_addrs| ip_addrs.pop())
                 .unwrap_or(self.broker.back_ip);
             let ip = IpEndpoint::new(ip, self.broker.port);
-            trace!("Connecting to {}", ip);
+            // trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
-            if let Err(e) = socket.connect(ip).await {
-                error!("Failed to connect to {}:1883: {:?}", ip, e);
+            if let Err(_e) = socket.connect(ip).await {
+                // error!("Failed to connect to {}:1883: {:?}", ip, e);
                 continue;
             }
 
