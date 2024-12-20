@@ -425,7 +425,7 @@ where
                 continue;
             }
 
-            info!("Connected to {}", self.broker);
+            info!("Connected to {}", self.broker.hostname);
             timeout = Some(RESET_BACKOFF);
 
             let (reader, writer) = socket.split();
