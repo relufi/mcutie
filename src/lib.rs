@@ -102,10 +102,14 @@ impl McutieReceiver {
     }
 }
 
+/// ip
 #[derive(Clone)]
 pub struct IpDn<'t>{
+    /// dns hostname
     pub hostname: &'t str,
+    /// port
     pub port: u16,
+    /// back ip
     pub back_ip: IpAddress,
 }
 
