@@ -72,11 +72,6 @@ impl<const N: usize> Buffer<N> {
     pub fn available(&self) -> usize {
         N - self.cursor
     }
-
-    /// Resets the buffer discarding any previously written bytes.
-    pub(crate) fn reset(&mut self) {
-        self.cursor = 0;
-    }
 }
 
 impl<const N: usize> Deref for Buffer<N> {

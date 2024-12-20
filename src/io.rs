@@ -2,34 +2,28 @@ use core::ops::Deref;
 
 pub(crate) use atomic16::assign_pid;
 use embassy_futures::select::{select, select3, Either};
-use embassy_net::{dns::DnsQueryType, tcp::{TcpReader, TcpSocket, TcpWriter}, IpAddress, IpEndpoint, Ipv4Address, Stack};
+use embassy_net::{
+    dns::DnsQueryType,
+    tcp::{TcpReader, TcpSocket, TcpWriter},
+    Stack,
+};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex,
-    mutex::Mutex,
     pubsub::{PubSubChannel, Subscriber, WaitResult},
-    signal::Signal,
 };
 use embassy_time::Timer;
 use embedded_io_async::Write;
-// use log::{error,trace,warn,debug};
 use mqttrs::{
-    decode_slice,
-    Connect,
-    ConnectReturnCode,
-    LastWill,
-    Packet,
-    Pid,
-    Protocol,
-    Publish,
-    QoS,
-    QosPid,
+    decode_slice, Connect, ConnectReturnCode, LastWill, Packet, Pid, Protocol, Publish, QoS, QosPid,
 };
 
-use crate::{device_id, fmt::Debug2Format, Buffer, ControlMessage, Error, IpDn, MqttMessage, Payload, Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DATA_CHANNEL, DEFAULT_BACKOFF, RESET_BACKOFF};
+use crate::{
+    device_id, fmt::Debug2Format, pipe::ConnectedPipe, ControlMessage, Error, MqttMessage, Payload,
+    Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DATA_CHANNEL, DEFAULT_BACKOFF,
+    RESET_BACKOFF,
+};
 
-static WRITE_BUFFER: Mutex<CriticalSectionRawMutex, Buffer<4096>> = Mutex::new(Buffer::new());
-static WRITE_PENDING: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static WRITE_COMPLETE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static SEND_QUEUE: ConnectedPipe<CriticalSectionRawMutex, Payload, 10> = ConnectedPipe::new();
 
 pub(crate) static CONTROL_CHANNEL: PubSubChannel<CriticalSectionRawMutex, ControlMessage, 2, 5, 0> =
     PubSubChannel::new();
@@ -75,26 +69,17 @@ mod atomic16 {
 }
 
 pub(crate) async fn send_packet(packet: Packet<'_>) -> Result<(), Error> {
-    loop {
-        // trace!("Waiting for data to be written");
-        WRITE_COMPLETE.wait().await;
+    let mut buffer = Payload::new();
 
-        {
-            let mut buffer = WRITE_BUFFER.lock().await;
-            // trace!("Encoding packet");
-
-            match buffer.encode_packet(&packet) {
-                Ok(()) => {
-                    // trace!("Signaling data ready");
-                    WRITE_PENDING.signal(());
-                    return Ok(());
-                }
-                Err(mqttrs::Error::WriteZero) => {}
-                Err(_) => {
-                    // error!("Failed to send packet");
-                    return Err(Error::PacketError);
-                }
-            }
+    match buffer.encode_packet(&packet) {
+        Ok(()) => {
+            trace!("Pushing new packet for broker");
+            SEND_QUEUE.push(buffer).await;
+            Ok(())
+        }
+        Err(_) => {
+            error!("Failed to send packet");
+            Err(Error::PacketError)
         }
     }
 }
@@ -194,7 +179,7 @@ where
     L: Publishable + 't,
 {
     pub(crate) network: Stack<'t>,
-    pub(crate) broker: IpDn<'t>,
+    pub(crate) broker: &'t str,
     pub(crate) last_will: Option<L>,
     pub(crate) username: Option<&'t str>,
     pub(crate) password: Option<&'t str>,
@@ -211,62 +196,62 @@ where
         false
     }
 
-    pub async fn recv_loop(&self, mut reader: TcpReader<'_>) -> Result<(), Error> {
+    async fn recv_loop(&self, mut reader: TcpReader<'_>) -> Result<(), Error> {
         let mut buffer = [0_u8; 4096];
         let mut cursor: usize = 0;
 
         let controller = CONTROL_CHANNEL.immediate_publisher();
 
         loop {
-            // trace!("socket read data start {}",cursor);
             match reader.read(&mut buffer[cursor..]).await {
                 Ok(0) => {
-                    // error!("Receive socket closed");
+                    error!("Receive socket closed");
                     return Ok(());
                 }
                 Ok(len) => {
                     cursor += len;
                 }
                 Err(_) => {
-                    // error!("I/O failure reading packet");
+                    error!("I/O failure reading packet");
                     return Err(Error::IOError);
                 }
             }
-            // trace!("Received {} bytes", cursor);
+
             let mut start_pos = 0;
             loop {
                 let packet_length = match packet_size(&buffer[start_pos..cursor]) {
                     Some(0) => {
-                        // error!("Invalid MQTT packet");
+                        error!("Invalid MQTT packet");
                         return Err(Error::PacketError);
                     }
                     Some(len) => len,
                     None => {
                         // None is returned when there is not yet enough data to decode a packet.
                         if start_pos != 0 {
+                            // Adjust the buffer to reclaim any unused data
                             buffer.copy_within(start_pos..cursor, 0);
-                            cursor = cursor - start_pos;
+                            cursor -= start_pos;
                         }
                         break;
                     }
                 };
-                // trace!("Received packet_length cursor: {},start_pos: {},packet_length: {}",cursor,start_pos, packet_length);
+
                 let packet = match decode_slice(&buffer[start_pos..(start_pos + packet_length)]) {
                     Ok(Some(p)) => p,
                     Ok(None) => {
-                        // error!("Packet length calculation failed.");
+                        error!("Packet length calculation failed.");
                         return Err(Error::PacketError);
                     }
                     Err(_) => {
-                        // error!("Invalid MQTT packet");
+                        error!("Invalid MQTT packet");
                         return Err(Error::PacketError);
                     }
                 };
 
-                // trace!(
-                //     "Received packet from broker: {:?}",
-                //     Debug2Format(&packet.get_type())
-                // );
+                trace!(
+                    "Received packet from broker: {:?}",
+                    Debug2Format(&packet.get_type())
+                );
 
                 match packet {
                     Packet::Connack(connack) => match connack.code {
@@ -281,7 +266,7 @@ where
                             DATA_CHANNEL.send(MqttMessage::Connected).await;
                         }
                         _ => {
-                            // error!("Connection request to broker was not accepted");
+                            error!("Connection request to broker was not accepted");
                             return Err(Error::IOError);
                         }
                     },
@@ -294,14 +279,13 @@ where
                         ) {
                             (Ok(topic), Ok(payload)) => {
                                 if !self.ha_handle_update(&topic, &payload).await {
-                                    // log::info!("Published message handle start");
                                     DATA_CHANNEL
                                         .send(MqttMessage::Publish(topic, payload))
                                         .await;
                                 }
                             }
                             _ => {
-                                // error!("Unable to process publish data as it was too large");
+                                error!("Unable to process publish data as it was too large");
                             }
                         }
 
@@ -316,9 +300,7 @@ where
                         }
                     }
                     Packet::Puback(pid) => {
-                        // log::info!("Published message start pid {}",pid.get());
                         controller.publish_immediate(ControlMessage::Published(pid));
-                        // log::info!("Published message end pid {}",pid.get());
                     }
                     Packet::Pubrec(pid) => {
                         controller.publish_immediate(ControlMessage::Published(pid));
@@ -334,7 +316,7 @@ where
                                 *return_code,
                             ));
                         } else {
-                            // warn!("Unexpected suback with no return codes");
+                            warn!("Unexpected suback with no return codes");
                         }
                     }
                     Packet::Unsuback(pid) => {
@@ -346,14 +328,14 @@ where
                     | Packet::Pingreq
                     | Packet::Unsubscribe(_)
                     | Packet::Disconnect => {
-                        //     debug!(
-                        //     "Unexpected packet from broker: {:?}",
-                        //     Debug2Format(&packet.get_type())
-                        // );
+                        debug!(
+                            "Unexpected packet from broker: {:?}",
+                            Debug2Format(&packet.get_type())
+                        );
                     }
                 }
-                start_pos = start_pos + packet_length;
-                // Adjust the buffer to reclaim any unused data
+
+                start_pos += packet_length;
                 if start_pos == cursor {
                     cursor = 0;
                     break;
@@ -363,76 +345,59 @@ where
     }
 
     async fn write_loop(&self, mut writer: TcpWriter<'_>) {
-        // Clear out any old data.
-        {
-            let mut buffer = WRITE_BUFFER.lock().await;
-            buffer.reset();
-            WRITE_PENDING.reset();
+        let mut buffer = Payload::new();
 
-            let mut last_will_topic = TopicString::new();
-            let mut last_will_payload = Payload::new();
+        let mut last_will_topic = TopicString::new();
+        let mut last_will_payload = Payload::new();
 
-            let last_will = self.last_will.as_ref().and_then(|p| {
-                if p.write_topic(&mut last_will_topic).is_ok()
-                    && p.write_payload(&mut last_will_payload).is_ok()
-                {
-                    Some(LastWill {
-                        topic: &last_will_topic,
-                        message: &last_will_payload,
-                        qos: p.qos(),
-                        retain: p.retain(),
-                    })
-                } else {
-                    None
-                }
-            });
-
-            // Send our connection request.
-            if buffer
-                .encode_packet(&Packet::Connect(Connect {
-                    protocol: Protocol::MQTT311,
-                    keep_alive: 60,
-                    client_id: device_id(),
-                    clean_session: true,
-                    last_will,
-                    username: self.username,
-                    password: self.password.map(|s| s.as_bytes()),
-                }))
-                .is_err()
+        let last_will = self.last_will.as_ref().and_then(|p| {
+            if p.write_topic(&mut last_will_topic).is_ok()
+                && p.write_payload(&mut last_will_payload).is_ok()
             {
-                // error!("Failed to encode connection packet");
-                return;
+                Some(LastWill {
+                    topic: &last_will_topic,
+                    message: &last_will_payload,
+                    qos: p.qos(),
+                    retain: p.retain(),
+                })
+            } else {
+                None
             }
+        });
 
-            if let Err(_e) = writer.write_all(&buffer).await {
-                // error!("Failed to send connection packet: {:?}", e);
-                return;
-            }
-
-            buffer.reset();
-
-            WRITE_COMPLETE.signal(());
+        // Send our connection request.
+        if buffer
+            .encode_packet(&Packet::Connect(Connect {
+                protocol: Protocol::MQTT311,
+                keep_alive: 60,
+                client_id: device_id(),
+                clean_session: true,
+                last_will,
+                username: self.username,
+                password: self.password.map(|s| s.as_bytes()),
+            }))
+            .is_err()
+        {
+            error!("Failed to encode connection packet");
+            return;
         }
 
+        if let Err(e) = writer.write_all(&buffer).await {
+            error!("Failed to send connection packet: {:?}", e);
+            return;
+        }
+
+        let reader = SEND_QUEUE.reader();
+
         loop {
-            // trace!("Writer waiting for data");
-            WRITE_PENDING.wait().await;
+            trace!("Writer waiting for data");
+            let buffer = reader.receive().await;
 
-            {
-                let mut buffer = WRITE_BUFFER.lock().await;
-                WRITE_PENDING.reset();
-                // trace!("Writer locked data");
-
-                if let Err(_e) = writer.write_all(&buffer).await {
-                    // error!("Failed to send data: {:?}", e);
-                    return;
-                }
-
-                buffer.reset();
+            trace!("Writer sending data");
+            if let Err(e) = writer.write_all(&buffer).await {
+                error!("Failed to send data: {:?}", e);
+                return;
             }
-
-            // trace!("Writer signaling completion");
-            WRITE_COMPLETE.signal(());
         }
     }
 
@@ -449,26 +414,36 @@ where
             }
 
             if !self.network.is_config_up() {
-                // trace!("Waiting for network to configure.");
+                trace!("Waiting for network to configure.");
                 self.network.wait_config_up().await;
-                // trace!("Network configured.");
+                trace!("Network configured.");
             }
 
-            let ip_addrs = self.network.dns_query(self.broker.hostname, DnsQueryType::A).await;
-            let ip = ip_addrs.ok().and_then(|mut ip_addrs| ip_addrs.pop())
-                .unwrap_or(self.broker.back_ip);
-            let ip = IpEndpoint::new(ip, self.broker.port);
-            // trace!("Connecting to {}", ip);
+            let ip_addrs = match self.network.dns_query(self.broker, DnsQueryType::A).await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to lookup '{}' for broker: {:?}", self.broker, e);
+                    continue;
+                }
+            };
+
+            let ip = match ip_addrs.first() {
+                Some(i) => *i,
+                None => {
+                    error!("No IP address found for broker '{}'", self.broker);
+                    continue;
+                }
+            };
+
+            trace!("Connecting to {}:1883", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
-            socket.set_timeout(Some(embassy_time::Duration::from_secs(120)));
-            socket.set_keep_alive(Some(embassy_time::Duration::from_secs(30)));
-            if let Err(_e) = socket.connect(ip).await {
-                // error!("Failed to connect to {}:1883: {:?}", ip, e);
+            if let Err(e) = socket.connect((ip, 1883)).await {
+                error!("Failed to connect to {}:1883: {:?}", ip, e);
                 continue;
             }
 
-            // info!("Connected to {}", self.broker);
+            info!("Connected to {}", self.broker);
             timeout = Some(RESET_BACKOFF);
 
             let (reader, writer) = socket.split();

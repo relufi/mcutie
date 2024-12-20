@@ -24,6 +24,7 @@ mod buffer;
 #[cfg(feature = "homeassistant")]
 pub mod homeassistant;
 mod io;
+mod pipe;
 mod publish;
 mod topic;
 

@@ -13,4 +13,9 @@ runs forever attempting to maintain a connection to the MQTT broker. It includes
 automatically subscribing to some topics when connected to the broker and registering a last will
 message to be published if the connection to the broker it lost.
 
-Has some basic support for the different MQTT QoS levels.
+The different MQTT QoS levels are supported to a certain extent. In most cases a QoS of 0 is used by
+default which means your message may never make it to the broker. This is particularly true in the
+case where the network is disconnected or the broker is unreachable in which case you will get no
+error or other warning after publishing a message. If you need that you can set a higher QoS level.
+This crate will not automatically re-send messages that fail to be delivered however you will get an
+error if the broker does not acknowledge messages within a certain time (currently 2 seconds).

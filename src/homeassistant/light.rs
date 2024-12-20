@@ -1,9 +1,10 @@
 //! Tools for publishing a [Home Assistant light](https://www.home-assistant.io/integrations/light.mqtt/).
 use core::{ops::Deref, str};
-// use log::{trace, warn};
+
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 use crate::{
+    fmt::Debug2Format,
     homeassistant::{binary_sensor::BinarySensorState, ser::List, Component},
     Error,
     Payload,
@@ -128,10 +129,10 @@ impl<'a> LightState<'a> {
     pub fn from_payload(payload: &'a Payload) -> Result<Self, Error> {
         let parsed: LedPayload<'a> = match payload.deserialize_json() {
             Ok(p) => p,
-            Err(_e) => {
-                // warn!("Failed to deserialize packet: {:?}", e);
+            Err(e) => {
+                warn!("Failed to deserialize packet: {:?}", Debug2Format(&e));
                 if let Ok(s) = str::from_utf8(payload) {
-                    // trace!("{}", s);
+                    trace!("{}", s);
                 }
                 return Err(Error::PacketError);
             }
