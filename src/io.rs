@@ -172,6 +172,8 @@ where
 {
     pub(crate) network: Stack<'t>,
     pub(crate) broker: IpDn<'t>,
+    pub(crate) tcp_keep_alive: bool,
+    pub(crate) mqtt_keep_alive: u16,
     pub(crate) last_will: Option<L>,
     pub(crate) username: Option<&'t str>,
     pub(crate) password: Option<&'t str>,
@@ -361,7 +363,7 @@ where
         if buffer
             .encode_packet(&Packet::Connect(Connect {
                 protocol: Protocol::MQTT311,
-                keep_alive: 60,
+                keep_alive: self.mqtt_keep_alive,
                 client_id: device_id(),
                 clean_session: true,
                 last_will,
@@ -418,8 +420,10 @@ where
             // trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
-            socket.set_timeout(Some(embassy_time::Duration::from_secs(120)));
-            socket.set_keep_alive(Some(embassy_time::Duration::from_secs(30)));
+            if self.tcp_keep_alive {
+                socket.set_timeout(Some(embassy_time::Duration::from_secs(120)));
+                socket.set_keep_alive(Some(embassy_time::Duration::from_secs(30)));
+            }
             if let Err(_e) = socket.connect(ip).await {
                 // error!("Failed to connect to {}:1883: {:?}", ip, e);
                 continue;
