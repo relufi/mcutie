@@ -121,7 +121,9 @@ where
     L: Publishable + 't,
 {
     network: Stack<'t>,
-    tcp_keep_alive: bool,
+    tcp_time_out: u64,
+    tcp_keep_alive: u64,
+    mqtt_ping_secs: u16,
     mqtt_keep_alive: u16,
     device_type: &'t str,
     device_id: Option<&'t str>,
@@ -137,10 +139,12 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't> McutieBuilder<'t, T, 
     ///
     /// `device_type` is expected to be the same for all devices of the same type.
     /// `broker` may be an IP address or a DNS name for the broker to connect to.
-    pub fn new(network: Stack<'t>, device_type: &'t str, broker: IpDn<'t>,tcp_keep_alive: bool,mqtt_keep_alive: u16) -> Self {
+    pub fn new(network: Stack<'t>, device_type: &'t str, broker: IpDn<'t>,tcp_time_out: u64,tcp_keep_alive: u64,mqtt_ping_secs: u16,mqtt_keep_alive: u16) -> Self {
         Self {
             network,
+            tcp_time_out,
             tcp_keep_alive,
+            mqtt_ping_secs,
             mqtt_keep_alive,
             device_type,
             broker,
@@ -163,7 +167,9 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't, const S: usize>
     ) -> McutieBuilder<'t, T, L, N> {
         McutieBuilder {
             network: self.network,
+            tcp_time_out: self.tcp_time_out,
             tcp_keep_alive: self.tcp_keep_alive,
+            mqtt_ping_secs: self.mqtt_ping_secs,
             mqtt_keep_alive: self.mqtt_keep_alive,
             device_type: self.device_type,
             broker: self.broker,
@@ -229,7 +235,9 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't, const S: usize>
             McutieTask {
                 network: self.network,
                 broker: self.broker,
+                tcp_time_out: self.tcp_time_out,
                 tcp_keep_alive: self.tcp_keep_alive,
+                mqtt_ping_secs: self.mqtt_ping_secs,
                 mqtt_keep_alive: self.mqtt_keep_alive,
                 last_will: self.last_will,
                 username: self.username,

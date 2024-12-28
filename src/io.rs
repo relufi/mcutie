@@ -172,7 +172,9 @@ where
 {
     pub(crate) network: Stack<'t>,
     pub(crate) broker: IpDn<'t>,
-    pub(crate) tcp_keep_alive: bool,
+    pub(crate) tcp_time_out: u64,
+    pub(crate) tcp_keep_alive: u64,
+    pub(crate) mqtt_ping_secs: u16,
     pub(crate) mqtt_keep_alive: u16,
     pub(crate) last_will: Option<L>,
     pub(crate) username: Option<&'t str>,
@@ -420,9 +422,11 @@ where
             // trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
-            if self.tcp_keep_alive {
-                socket.set_timeout(Some(embassy_time::Duration::from_secs(120)));
-                socket.set_keep_alive(Some(embassy_time::Duration::from_secs(30)));
+            if self.tcp_time_out != 0 {
+                socket.set_timeout(Some(embassy_time::Duration::from_secs(self.tcp_time_out)));
+            }
+            if self.tcp_keep_alive != 0 {
+                socket.set_keep_alive(Some(embassy_time::Duration::from_secs(self.tcp_keep_alive)));
             }
             if let Err(_e) = socket.connect(ip).await {
                 // error!("Failed to connect to {}:1883: {:?}", ip, e);
@@ -439,7 +443,7 @@ where
 
             let ping_loop = async {
                 loop {
-                    Timer::after_secs(45).await;
+                    Timer::after_secs(self.mqtt_ping_secs as u64).await;
 
                     let _ = send_packet(Packet::Pingreq).await;
                 }
