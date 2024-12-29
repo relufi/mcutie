@@ -3,28 +3,19 @@ use core::ops::Deref;
 pub(crate) use atomic16::assign_pid;
 use embassy_futures::select::{select, select3, Either};
 use embassy_net::{dns::DnsQueryType, tcp::{TcpReader, TcpSocket, TcpWriter}, IpEndpoint, Stack};
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex,
-    pubsub::{PubSubChannel, Subscriber, WaitResult},
-};
-use embassy_time::Timer;
+use embassy_sync::pubsub::WaitResult;
+use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use mqttrs::{
     decode_slice, Connect, ConnectReturnCode, LastWill, Packet, Pid, Protocol, Publish, QoS, QosPid,
 };
 
-use crate::{device_id, fmt::Debug2Format, pipe::ConnectedPipe, ControlMessage, Error, IpDn, MqttMessage, Payload, Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DATA_CHANNEL, DEFAULT_BACKOFF, RESET_BACKOFF};
+use crate::{fmt::Debug2Format, ControlMessage, ControlSubscriber, Error, IpDn, McutieReceiver, McutieSender, MqttMessage, Payload, Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DEFAULT_BACKOFF, RESET_BACKOFF};
 
-static SEND_QUEUE: ConnectedPipe<CriticalSectionRawMutex, Payload, 10> = ConnectedPipe::new();
 
-pub(crate) static CONTROL_CHANNEL: PubSubChannel<CriticalSectionRawMutex, ControlMessage, 2, 5, 0> =
-    PubSubChannel::new();
-
-type ControlSubscriber = Subscriber<'static, CriticalSectionRawMutex, ControlMessage, 2, 5, 0>;
-
-pub(crate) async fn subscribe() -> ControlSubscriber {
+pub(crate) async fn subscribe<'a>(sender: &'a McutieSender) -> ControlSubscriber<'a> {
     loop {
-        if let Ok(sub) = CONTROL_CHANNEL.subscriber() {
+        if let Ok(sub) = sender.control_channel.subscriber() {
             return sub;
         }
 
@@ -32,41 +23,23 @@ pub(crate) async fn subscribe() -> ControlSubscriber {
     }
 }
 
-#[cfg(target_has_atomic = "16")]
 mod atomic16 {
-    use core::sync::atomic::{AtomicU16, Ordering};
 
     use mqttrs::Pid;
+    use crate::McutieSender;
 
-    static PID: AtomicU16 = AtomicU16::new(0);
-
-    pub(crate) async fn assign_pid() -> Pid {
-        Pid::new() + PID.fetch_add(1, Ordering::SeqCst)
+    pub(crate) async fn assign_pid(sender: &'_ McutieSender) -> Pid {
+        let new_val = sender.count.get() + 1;
+        sender.count.set(new_val);
+        Pid::new() + new_val
     }
 }
 
-#[cfg(not(target_has_atomic = "16"))]
-mod atomic16 {
-    use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
-    use mqttrs::Pid;
-
-    static PID_MUTEX: Mutex<CriticalSectionRawMutex, u16> = Mutex::new(0);
-
-    pub(crate) async fn assign_pid() -> Pid {
-        let mut locked = PID_MUTEX.lock().await;
-        *locked += 1;
-
-        Pid::new() + *locked
-    }
-}
-
-pub(crate) async fn send_packet(packet: Packet<'_>) -> Result<(), Error> {
-    let mut buffer = Payload::new();
-
-    match buffer.encode_packet(&packet) {
+pub(crate) async fn send_packet(sender: &'_ McutieSender,packet: Packet<'_>) -> Result<(), Error> {
+    let mut writer = sender.sender.writer().await;
+    match writer.write().encode_packet(&packet) {
         Ok(()) => {
             trace!("Pushing new packet for broker");
-            SEND_QUEUE.push(buffer).await;
             Ok(())
         }
         Err(_) => {
@@ -77,7 +50,7 @@ pub(crate) async fn send_packet(packet: Packet<'_>) -> Result<(), Error> {
 }
 
 pub(crate) async fn wait_for_publish(
-    mut subscriber: ControlSubscriber,
+    mut subscriber: ControlSubscriber<'_>,
     expected_pid: Pid,
 ) -> Result<(), Error> {
     match select(
@@ -106,21 +79,22 @@ pub(crate) async fn wait_for_publish(
 }
 
 pub(crate) async fn publish(
+    sender: &'_ mut McutieSender,
     topic_name: &str,
     payload: &[u8],
     qos: QoS,
     retain: bool,
 ) -> Result<(), Error> {
-    let subscriber = subscribe().await;
+    let subscriber = subscribe(sender).await;
 
     let (qospid, pid) = match qos {
         QoS::AtMostOnce => (QosPid::AtMostOnce, None),
         QoS::AtLeastOnce => {
-            let pid = assign_pid().await;
+            let pid = assign_pid(sender).await;
             (QosPid::AtLeastOnce(pid), Some(pid))
         }
         QoS::ExactlyOnce => {
-            let pid = assign_pid().await;
+            let pid = assign_pid(sender).await;
             (QosPid::ExactlyOnce(pid), Some(pid))
         }
     };
@@ -133,7 +107,7 @@ pub(crate) async fn publish(
         payload,
     });
 
-    send_packet(packet).await?;
+    send_packet(sender,packet).await?;
 
     if let Some(expected_pid) = pid {
         wait_for_publish(subscriber, expected_pid).await
@@ -165,7 +139,7 @@ fn packet_size(buffer: &[u8]) -> Option<usize> {
 }
 
 /// The MQTT task that must be run in order for the stack to operate.
-pub struct McutieTask<'t, T, L, const S: usize>
+pub struct McutieTask<'t,'a, T, L, const S: usize>
 where
     T: Deref<Target = str> + 't,
     L: Publishable + 't,
@@ -176,27 +150,34 @@ where
     pub(crate) tcp_keep_alive: u64,
     pub(crate) mqtt_ping_secs: u16,
     pub(crate) mqtt_keep_alive: u16,
+    pub(crate) client_id: &'t str,
     pub(crate) last_will: Option<L>,
     pub(crate) username: Option<&'t str>,
     pub(crate) password: Option<&'t str>,
     pub(crate) subscriptions: [Topic<T>; S],
+    pub receive: &'a McutieReceiver,
+    pub sender: &'a McutieSender,
 }
 
-impl<'t, T, L, const S: usize> McutieTask<'t, T, L, S>
+impl<'t,'a, T, L, const S: usize> McutieTask<'t,'a, T, L, S>
 where
     T: Deref<Target = str> + 't,
     L: Publishable + 't,
 {
-    #[cfg(not(feature = "homeassistant"))]
     async fn ha_handle_update(&self, _topic: &Topic<TopicString>, _payload: &Payload) -> bool {
         false
     }
+
+    pub async fn send_packet(&self,packet: Packet<'_>) -> Result<(), Error> {
+        send_packet(self.sender,packet).await
+    }
+
 
     async fn recv_loop(&self, mut reader: TcpReader<'_>) -> Result<(), Error> {
         let mut buffer = [0_u8; 4096];
         let mut cursor: usize = 0;
 
-        let controller = CONTROL_CHANNEL.immediate_publisher();
+        let controller = self.sender.control_channel.immediate_publisher();
 
         loop {
             match reader.read(&mut buffer[cursor..]).await {
@@ -252,14 +233,11 @@ where
                 match packet {
                     Packet::Connack(connack) => match connack.code {
                         ConnectReturnCode::Accepted => {
-                            #[cfg(feature = "homeassistant")]
-                            self.ha_after_connected().await;
-
                             for topic in &self.subscriptions {
-                                let _ = topic.subscribe(false).await;
+                                let _ = topic.subscribe(self.sender,false).await;
                             }
 
-                            DATA_CHANNEL.send(MqttMessage::Connected).await;
+                            self.receive.send(MqttMessage::Connected).await;
                         }
                         _ => {
                             error!("Connection request to broker was not accepted");
@@ -275,7 +253,7 @@ where
                         ) {
                             (Ok(topic), Ok(payload)) => {
                                 if !self.ha_handle_update(&topic, &payload).await {
-                                    DATA_CHANNEL
+                                    self.receive
                                         .send(MqttMessage::Publish(topic, payload))
                                         .await;
                                 }
@@ -288,10 +266,10 @@ where
                         match publish.qospid {
                             mqttrs::QosPid::AtMostOnce => {}
                             mqttrs::QosPid::AtLeastOnce(pid) => {
-                                send_packet(Packet::Puback(pid)).await?;
+                                self.send_packet(Packet::Puback(pid)).await?;
                             }
                             mqttrs::QosPid::ExactlyOnce(pid) => {
-                                send_packet(Packet::Pubrec(pid)).await?;
+                                self.send_packet(Packet::Pubrec(pid)).await?;
                             }
                         }
                     }
@@ -300,9 +278,9 @@ where
                     }
                     Packet::Pubrec(pid) => {
                         controller.publish_immediate(ControlMessage::Published(pid));
-                        send_packet(Packet::Pubrel(pid)).await?;
+                        self.send_packet(Packet::Pubrel(pid)).await?;
                     }
-                    Packet::Pubrel(pid) => send_packet(Packet::Pubrel(pid)).await?,
+                    Packet::Pubrel(pid) => self.send_packet(Packet::Pubrel(pid)).await?,
                     Packet::Pubcomp(_) => {}
 
                     Packet::Suback(suback) => {
@@ -366,7 +344,7 @@ where
             .encode_packet(&Packet::Connect(Connect {
                 protocol: Protocol::MQTT311,
                 keep_alive: self.mqtt_keep_alive,
-                client_id: device_id(),
+                client_id: self.client_id,
                 clean_session: true,
                 last_will,
                 username: self.username,
@@ -383,14 +361,13 @@ where
             return;
         }
 
-        let reader = SEND_QUEUE.reader();
-
+        let reader =  self.sender.sender.reader();
         loop {
             trace!("Writer waiting for data");
             let buffer = reader.receive().await;
 
             trace!("Writer sending data");
-            if let Err(e) = writer.write_all(&buffer).await {
+            if let Err(e) = writer.write_all(buffer.read()).await {
                 error!("Failed to send data: {:?}", e);
                 return;
             }
@@ -398,7 +375,7 @@ where
     }
 
     /// Runs the MQTT stack. The future returns from this must be awaited for everything to work.
-    pub async fn run(self) {
+    pub async fn run(&self) {
         let mut timeout: Option<u64> = None;
 
         let mut rx_buffer = [0; 4096];
@@ -411,7 +388,7 @@ where
 
             if !self.network.is_config_up() {
                 trace!("Waiting for network to configure.");
-                self.network.wait_config_up().await;
+                let _ = embassy_time::with_timeout(Duration::from_secs(10),self.network.wait_config_up()).await;
                 trace!("Network configured.");
             }
 
@@ -437,7 +414,6 @@ where
             timeout = Some(RESET_BACKOFF);
 
             let (reader, writer) = socket.split();
-
             let recv_loop = self.recv_loop(reader);
             let send_loop = self.write_loop(writer);
 
@@ -445,7 +421,7 @@ where
                 loop {
                     Timer::after_secs(self.mqtt_ping_secs as u64).await;
 
-                    let _ = send_packet(Packet::Pingreq).await;
+                    let _ = send_packet(self.sender,Packet::Pingreq).await;
                 }
             };
 
@@ -453,7 +429,7 @@ where
 
             socket.close();
 
-            DATA_CHANNEL.send(MqttMessage::Disconnected).await;
+            self.receive.send(MqttMessage::Disconnected).await;
         }
     }
 }

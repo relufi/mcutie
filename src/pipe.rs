@@ -1,123 +1,85 @@
-use core::{
-    cell::RefCell,
-    future::Future,
-    pin::Pin,
-    task::{Context, Poll, Waker},
-};
-
+use core::future::poll_fn;
+use core::{cell::RefCell, task::Poll};
 use embassy_sync::blocking_mutex::{raw::RawMutex, Mutex};
-use pin_project::pin_project;
+use embassy_sync::waitqueue::WakerRegistration;
 
-struct PipeData<T, const N: usize> {
-    connect_count: usize,
-    receiver_waker: Option<Waker>,
-    sender_waker: Option<Waker>,
-    pending: Option<T>,
+pub(crate) trait Clean {
+    fn clean(&mut self);
 }
 
-fn swap_wakers(waker: &mut Option<Waker>, new_waker: &Waker) {
-    if let Some(old_waker) = waker.take() {
-        if old_waker.will_wake(new_waker) {
-            *waker = Some(old_waker)
-        } else {
-            if !new_waker.will_wake(&old_waker) {
-                old_waker.wake();
-            }
+struct PipeData<T: Clean> {
+    connect_count: usize,
+    receiver_waker: WakerRegistration,
+    sender_waker: WakerRegistration,
+    pending: T,
+    state: State,
+}
 
-            *waker = Some(new_waker.clone());
-        }
-    } else {
-        *waker = Some(new_waker.clone())
+#[derive(Clone, Copy)]
+enum State {
+    ReadStart,
+    ReadEnd,
+    WriteStart,
+    WriteEnd,
+}
+
+pub(crate) struct PipeReader<'a, M: RawMutex, T: Clean> {
+    pipe: &'a ConnectedPipe<M, T>,
+    data: &'a T,
+}
+impl<M: RawMutex, T: Clean> PipeReader<'_, M, T> {
+    pub(crate) fn read(&self) -> &T {
+        self.data
     }
 }
-
-pub(crate) struct ReceiveFuture<'a, M: RawMutex, T, const N: usize> {
-    pipe: &'a ConnectedPipe<M, T, N>,
-}
-
-impl<M: RawMutex, T, const N: usize> Future for ReceiveFuture<'_, M, T, N> {
-    type Output = T;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+impl<M: RawMutex, T: Clean> Drop for PipeReader<'_, M, T> {
+    fn drop(&mut self) {
         self.pipe.inner.lock(|cell| {
             let mut inner = cell.borrow_mut();
-
-            if let Some(waker) = inner.sender_waker.take() {
-                waker.wake();
-            }
-
-            if let Some(item) = inner.pending.take() {
-                if let Some(old_waker) = inner.receiver_waker.take() {
-                    old_waker.wake();
-                }
-
-                Poll::Ready(item)
-            } else {
-                swap_wakers(&mut inner.receiver_waker, cx.waker());
-                Poll::Pending
-            }
+            inner.state = State::WriteEnd;
+            inner.receiver_waker.wake();
         })
     }
 }
 
-pub(crate) struct PipeReader<'a, M: RawMutex, T, const N: usize> {
-    pipe: &'a ConnectedPipe<M, T, N>,
+pub(crate) struct ConnectReader<'a, M: RawMutex, T: Clean> {
+    pipe: &'a ConnectedPipe<M, T>,
 }
 
-impl<M: RawMutex, T, const N: usize> PipeReader<'_, M, T, N> {
-    #[must_use]
-    pub(crate) fn receive(&self) -> ReceiveFuture<'_, M, T, N> {
-        ReceiveFuture { pipe: self.pipe }
+impl<M: RawMutex, T: Clean> ConnectReader<'_, M, T> {
+    pub(crate) async fn receive(&self) -> PipeReader<'_, M, T> {
+        poll_fn(|cx| {
+            self.pipe.inner.lock(|s| {
+                let s = &mut *s.borrow_mut();
+                if let State::ReadEnd = s.state {
+                    s.state = State::WriteStart;
+                    // s.receiver_waker.wake();
+                    Poll::Ready(unsafe{
+                        PipeReader {
+                            pipe: &*(self.pipe as *const ConnectedPipe<M, T>),
+                            data: &*(&s.pending as *const T),
+                        }
+                    })
+                } else {
+                    s.receiver_waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+        })
+        .await
     }
 }
 
-impl<M: RawMutex, T, const N: usize> Drop for PipeReader<'_, M, T, N> {
+impl<M: RawMutex, T: Clean> Drop for ConnectReader<'_, M, T> {
     fn drop(&mut self) {
         self.pipe.inner.lock(|cell| {
             let mut inner = cell.borrow_mut();
             inner.connect_count -= 1;
 
             if inner.connect_count == 0 {
-                inner.pending = None;
+                inner.state = State::WriteEnd;
             }
-
-            if let Some(waker) = inner.sender_waker.take() {
-                waker.wake();
-            }
-        })
-    }
-}
-
-#[pin_project]
-pub(crate) struct PushFuture<'a, M: RawMutex, T, const N: usize> {
-    data: Option<T>,
-    pipe: &'a ConnectedPipe<M, T, N>,
-}
-
-impl<M: RawMutex, T, const N: usize> Future for PushFuture<'_, M, T, N> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.pipe.inner.lock(|cell| {
-            let project = self.project();
-            let mut inner = cell.borrow_mut();
-
-            if let Some(receiver) = inner.receiver_waker.take() {
-                receiver.wake();
-            }
-
-            if project.data.is_none() || inner.connect_count == 0 {
-                trace!("Dropping packet");
-                Poll::Ready(())
-            } else if inner.pending.is_some() {
-                swap_wakers(&mut inner.sender_waker, cx.waker());
-                Poll::Pending
-            } else {
-                trace!("Pushed packet to receiver");
-                inner.pending = project.data.take();
-
-                Poll::Ready(())
-            }
+            inner.sender_waker.wake();
         })
     }
 }
@@ -125,39 +87,72 @@ impl<M: RawMutex, T, const N: usize> Future for PushFuture<'_, M, T, N> {
 /// A pipe that knows whether a receiver is connected. If so pushing to the
 /// queue waits until there is space in the queue, otherwise data is simply
 /// dropped.
-pub(crate) struct ConnectedPipe<M: RawMutex, T, const N: usize> {
-    inner: Mutex<M, RefCell<PipeData<T, N>>>,
+pub(crate) struct ConnectedPipe<M: RawMutex, T: Clean> {
+    inner: Mutex<M, RefCell<PipeData<T>>>,
 }
 
-impl<M: RawMutex, T, const N: usize> ConnectedPipe<M, T, N> {
-    pub(crate) const fn new() -> Self {
+impl<M: RawMutex, T: Clean> ConnectedPipe<M, T> {
+    pub(crate) const fn new(data: T) -> Self {
         Self {
             inner: Mutex::new(RefCell::new(PipeData {
                 connect_count: 0,
-                receiver_waker: None,
-                sender_waker: None,
-                pending: None,
+                receiver_waker: WakerRegistration::new(),
+                sender_waker: WakerRegistration::new(),
+                pending: data,
+                state: State::WriteEnd,
             })),
         }
     }
 
     /// A future that waits for a new item to be available.
-    pub(crate) fn reader(&self) -> PipeReader<'_, M, T, N> {
+    pub(crate) fn reader(&self) -> ConnectReader<'_, M, T> {
         self.inner.lock(|cell| {
             let mut inner = cell.borrow_mut();
             inner.connect_count += 1;
 
-            PipeReader { pipe: self }
+            ConnectReader { pipe: self }
         })
     }
 
-    /// Pushes an item to the reader, waiting for a slot to become available if
-    /// connected.
-    #[must_use]
-    pub(crate) fn push(&self, data: T) -> PushFuture<'_, M, T, N> {
-        PushFuture {
-            data: Some(data),
-            pipe: self,
-        }
+    pub(crate) async fn writer<'a>(&'a self) -> PipeWriter<'a, M, T> {
+        poll_fn(|cx| {
+            self.inner.lock(|s| {
+                let s = &mut *s.borrow_mut();
+                if let State::WriteEnd = s.state {
+                    s.state = State::ReadStart;
+                    s.pending.clean();
+                    // s.sender_waker.wake();
+                    Poll::Ready(unsafe{
+                        PipeWriter {
+                            pipe: &*(self as *const ConnectedPipe<M, T>),
+                            data: &mut *(&mut s.pending as *mut T),
+                        }
+                    })
+                } else {
+                    s.sender_waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+        })
+        .await
+    }
+}
+
+pub(crate) struct PipeWriter<'a, M: RawMutex, T: Clean> {
+    pipe: &'a ConnectedPipe<M, T>,
+    data: &'a mut T,
+}
+impl<M: RawMutex, T: Clean> PipeWriter<'_, M, T> {
+    pub(crate) fn write(&mut self) -> &mut T {
+        self.data
+    }
+}
+impl<M: RawMutex, T: Clean> Drop for PipeWriter<'_, M, T> {
+    fn drop(&mut self) {
+        self.pipe.inner.lock(|cell| {
+            let mut inner = cell.borrow_mut();
+            inner.state = State::ReadEnd;
+            inner.receiver_waker.wake();
+        })
     }
 }

@@ -4,6 +4,7 @@ use embedded_io::{SliceWriteError, Write};
 use mqttrs::{encode_slice, Packet};
 
 use crate::Error;
+use crate::pipe::Clean;
 
 /// A stack allocated buffer that can be written to and then read back from.
 /// Dereferencing as a [`u8`] slice allows access to previously written data.
@@ -13,6 +14,12 @@ use crate::Error;
 pub struct Buffer<const N: usize> {
     bytes: [u8; N],
     cursor: usize,
+}
+
+impl<const N: usize> Clean for Buffer<N> {
+    fn clean(&mut self) {
+        self.cursor = 0;
+    }
 }
 
 impl<const N: usize> Default for Buffer<N> {

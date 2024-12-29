@@ -1,9 +1,9 @@
-use core::{fmt::Display, future::Future, ops::Deref};
-
+use core::{fmt::Display, ops::Deref};
+use core::future::Future;
 use embedded_io::Write;
 use mqttrs::QoS;
 
-use crate::{io::publish, Error, Payload, Topic, TopicString};
+use crate::{io::publish, Error, McutieSender, Payload, Topic, TopicString};
 
 /// A message that can be published to an MQTT broker.
 pub trait Publishable {
@@ -25,15 +25,14 @@ pub trait Publishable {
 
     /// Publishes this message to the broker. If the stack has not yet been
     /// initialized this is likely to panic.
-    fn publish(&self) -> impl Future<Output = Result<(), Error>> {
+    fn publish(&self,sender: &'_ mut McutieSender,) ->  impl Future<Output = Result<(), Error>> {
         async {
             let mut topic = TopicString::new();
             self.write_topic(&mut topic)?;
 
             let mut payload = Payload::new();
             self.write_payload(&mut payload)?;
-
-            publish(&topic, &payload, self.qos(), self.retain()).await
+            publish(sender,&topic, &payload, self.qos(), self.retain()).await
         }
     }
 }
@@ -79,11 +78,11 @@ impl<'a, T: Deref<Target = str> + 'a, B: AsRef<[u8]>> Publishable for PublishByt
         self.retain
     }
 
-    async fn publish(&self) -> Result<(), Error> {
+    async fn publish(&self,sender: &'_ mut McutieSender) -> Result<(), Error> {
         let mut topic = TopicString::new();
         self.write_topic(&mut topic)?;
 
-        publish(&topic, self.data.as_ref(), self.qos(), self.retain()).await
+        publish(sender,&topic, self.data.as_ref(), self.qos(), self.retain()).await
     }
 }
 

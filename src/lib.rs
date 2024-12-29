@@ -1,28 +1,28 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
 #![deny(unreachable_pub)]
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 use core::{ops::Deref, str};
-
+use core::cell::Cell;
 pub use buffer::Buffer;
-use embassy_net::{HardwareAddress, IpAddress, Stack};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
+use embassy_net::{IpAddress, Stack};
+use embassy_sync::channel::Channel;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::pubsub::{PubSubChannel, Subscriber};
 use heapless::String;
 pub use io::McutieTask;
 pub use mqttrs::QoS;
 use mqttrs::{Pid, SubscribeReturnCodes};
-use once_cell::sync::OnceCell;
 pub use publish::*;
 pub use topic::Topic;
+use crate::pipe::ConnectedPipe;
 
 // This must come first so the macros are visible
 pub(crate) mod fmt;
 
 mod buffer;
-#[cfg(feature = "homeassistant")]
-pub mod homeassistant;
 mod io;
 mod pipe;
 mod publish;
@@ -44,18 +44,6 @@ const RESET_BACKOFF: u64 = 200;
 // How long to wait for the broker to confirm actions.
 const CONFIRMATION_TIMEOUT: u64 = 2000;
 
-static DATA_CHANNEL: Channel<CriticalSectionRawMutex, MqttMessage, 10> = Channel::new();
-
-static DEVICE_TYPE: OnceCell<String<32>> = OnceCell::new();
-static DEVICE_ID: OnceCell<String<32>> = OnceCell::new();
-
-fn device_id() -> &'static str {
-    DEVICE_ID.get().unwrap()
-}
-
-fn device_type() -> &'static str {
-    DEVICE_TYPE.get().unwrap()
-}
 
 /// Various errors
 #[derive(Debug)]
@@ -91,16 +79,25 @@ enum ControlMessage {
     Subscribed(Pid, SubscribeReturnCodes),
     Unsubscribed(Pid),
 }
+type ControlSubscriber<'a> = Subscriber<'a, NoopRawMutex, ControlMessage, 2, 5, 0>;
+pub struct McutieSender {
+    sender: ConnectedPipe<NoopRawMutex,Payload>,
+    count: Cell<u16>,
+    control_channel:  PubSubChannel<NoopRawMutex, ControlMessage, 2, 5, 0>,
+}
 
-/// Receives messages from the broker.
-pub struct McutieReceiver;
-
-impl McutieReceiver {
-    /// Waits for the next message from the broker.
-    pub async fn receive(&self) -> MqttMessage {
-        DATA_CHANNEL.receive().await
+impl McutieSender {
+    pub fn new() -> Self {
+        Self {
+            sender: ConnectedPipe::new(Payload::new()),
+            count: Cell::new(0),
+            control_channel: PubSubChannel::new()
+        }
     }
 }
+
+/// Receives messages from the broker.
+pub type McutieReceiver = Channel<NoopRawMutex, MqttMessage, 10>;
 
 /// ip
 #[derive(Clone)]
@@ -125,8 +122,7 @@ where
     tcp_keep_alive: u64,
     mqtt_ping_secs: u16,
     mqtt_keep_alive: u16,
-    device_type: &'t str,
-    device_id: Option<&'t str>,
+    device_id: &'t str,
     broker: IpDn<'t>,
     last_will: Option<L>,
     username: Option<&'t str>,
@@ -139,16 +135,15 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't> McutieBuilder<'t, T, 
     ///
     /// `device_type` is expected to be the same for all devices of the same type.
     /// `broker` may be an IP address or a DNS name for the broker to connect to.
-    pub fn new(network: Stack<'t>, device_type: &'t str, broker: IpDn<'t>,tcp_time_out: u64,tcp_keep_alive: u64,mqtt_ping_secs: u16,mqtt_keep_alive: u16) -> Self {
+    pub fn new(network: Stack<'t>, device_id: &'t str, broker: IpDn<'t>,tcp_time_out: u64,tcp_keep_alive: u64,mqtt_ping_secs: u16,mqtt_keep_alive: u16) -> Self {
         Self {
             network,
             tcp_time_out,
             tcp_keep_alive,
             mqtt_ping_secs,
             mqtt_keep_alive,
-            device_type,
             broker,
-            device_id: None,
+            device_id,
             last_will: None,
             username: None,
             password: None,
@@ -171,7 +166,6 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't, const S: usize>
             tcp_keep_alive: self.tcp_keep_alive,
             mqtt_ping_secs: self.mqtt_ping_secs,
             mqtt_keep_alive: self.mqtt_keep_alive,
-            device_type: self.device_type,
             broker: self.broker,
             device_id: self.device_id,
             last_will: self.last_will,
@@ -202,48 +196,24 @@ impl<'t, T: Deref<Target = str> + 't, L: Publishable + 't, const S: usize>
         }
     }
 
-    /// Sets a custom unique device identifier. If none is set then the network
-    /// MAC address is used.
-    pub fn with_device_id(self, device_id: &'t str) -> Self {
-        Self {
-            device_id: Some(device_id),
-            ..self
-        }
-    }
-
     /// Initialises the MQTT stack returning a receiver for listening to
     /// messages from the broker and a future that must be run in order for the
     /// stack to operate.
-    pub fn build(self) -> (McutieReceiver, McutieTask<'t, T, L, S>) {
-        let mut dtype = String::<32>::new();
-        dtype.push_str(self.device_type).unwrap();
-        DEVICE_TYPE.set(dtype).unwrap();
-
-        let mut did = String::<32>::new();
-        if let Some(device_id) = self.device_id {
-            did.push_str(device_id).unwrap();
-        } else if let HardwareAddress::Ethernet(address) = self.network.hardware_address() {
-            let mut buffer = [0_u8; 12];
-            hex::encode_to_slice(address.as_bytes(), &mut buffer).unwrap();
-            did.push_str(str::from_utf8(&buffer).unwrap()).unwrap();
+    pub fn build<'a>(self, sender: &'a McutieSender,receive: &'a McutieReceiver) -> McutieTask<'t,'a, T, L, S> {
+        McutieTask {
+            network: self.network,
+            broker: self.broker,
+            tcp_time_out: self.tcp_time_out,
+            tcp_keep_alive: self.tcp_keep_alive,
+            mqtt_ping_secs: self.mqtt_ping_secs,
+            mqtt_keep_alive: self.mqtt_keep_alive,
+            client_id: self.device_id,
+            last_will: self.last_will,
+            username: self.username,
+            password: self.password,
+            subscriptions: self.subscriptions,
+            receive,
+            sender
         }
-
-        DEVICE_ID.set(did).unwrap();
-
-        (
-            McutieReceiver {},
-            McutieTask {
-                network: self.network,
-                broker: self.broker,
-                tcp_time_out: self.tcp_time_out,
-                tcp_keep_alive: self.tcp_keep_alive,
-                mqtt_ping_secs: self.mqtt_ping_secs,
-                mqtt_keep_alive: self.mqtt_keep_alive,
-                last_will: self.last_will,
-                username: self.username,
-                password: self.password,
-                subscriptions: self.subscriptions,
-            },
-        )
     }
 }
