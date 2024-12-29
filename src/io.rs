@@ -406,7 +406,7 @@ where
                 socket.set_keep_alive(Some(embassy_time::Duration::from_secs(self.tcp_keep_alive)));
             }
             if let Err(_e) = socket.connect(ip).await {
-                error!("Failed to connect to {}:1883: {:?}", ip, _e);
+                error!("Failed to connect to {},{:?}", ip, _e);
                 continue;
             }
 
