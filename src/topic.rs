@@ -166,7 +166,7 @@ impl<T: Deref<Target = str>> Topic<T> {
 
     /// Unsubscribes from a topic. If `wait_for_ack` is true then this will wait until confirmation is
     /// received from the broker before returning.
-    pub async fn unsubscribe(&self,sender: &'_ mut McutieSender, wait_for_ack: bool) -> Result<(), Error> {
+    pub async fn unsubscribe(&self,sender: &'_ McutieSender, wait_for_ack: bool) -> Result<(), Error> {
         let mut subscriber = subscribe(sender).await;
 
         let mut topic_path = TopicString::new();

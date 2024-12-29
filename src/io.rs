@@ -79,7 +79,7 @@ pub(crate) async fn wait_for_publish(
 }
 
 pub(crate) async fn publish(
-    sender: &'_ mut McutieSender,
+    sender: &'_ McutieSender,
     topic_name: &str,
     payload: &[u8],
     qos: QoS,

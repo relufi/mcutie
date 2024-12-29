@@ -25,7 +25,7 @@ pub trait Publishable {
 
     /// Publishes this message to the broker. If the stack has not yet been
     /// initialized this is likely to panic.
-    fn publish(&self,sender: &'_ mut McutieSender,) ->  impl Future<Output = Result<(), Error>> {
+    fn publish(&self,sender: &'_ McutieSender,) ->  impl Future<Output = Result<(), Error>> {
         async {
             let mut topic = TopicString::new();
             self.write_topic(&mut topic)?;
@@ -78,7 +78,7 @@ impl<'a, T: Deref<Target = str> + 'a, B: AsRef<[u8]>> Publishable for PublishByt
         self.retain
     }
 
-    async fn publish(&self,sender: &'_ mut McutieSender) -> Result<(), Error> {
+    async fn publish(&self,sender: &'_ McutieSender) -> Result<(), Error> {
         let mut topic = TopicString::new();
         self.write_topic(&mut topic)?;
 
