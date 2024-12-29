@@ -406,7 +406,7 @@ where
                 socket.set_keep_alive(Some(embassy_time::Duration::from_secs(self.tcp_keep_alive)));
             }
             if let Err(_e) = socket.connect(ip).await {
-                // error!("Failed to connect to {}:1883: {:?}", ip, e);
+                error!("Failed to connect to {}:1883: {:?}", ip, _e);
                 continue;
             }
 
@@ -424,7 +424,7 @@ where
                     let _ = send_packet(self.sender,Packet::Pingreq).await;
                 }
             };
-
+            info!("mq loop start");
             select3(send_loop, ping_loop, recv_loop).await;
 
             socket.close();
