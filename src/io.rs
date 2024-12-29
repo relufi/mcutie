@@ -385,7 +385,7 @@ where
             if let Some(millis) = timeout.replace(DEFAULT_BACKOFF) {
                 Timer::after_millis(millis).await;
             }
-
+            trace!("Network configured start");
             if !self.network.is_config_up() {
                 trace!("Waiting for network to configure.");
                 let _ = embassy_time::with_timeout(Duration::from_secs(10),self.network.wait_config_up()).await;
@@ -396,7 +396,7 @@ where
             let ip = ip_addrs.ok().and_then(|mut ip_addrs| ip_addrs.pop())
                 .unwrap_or(self.broker.back_ip);
             let ip = IpEndpoint::new(ip, self.broker.port);
-            // trace!("Connecting to {}", ip);
+            trace!("Connecting to {}", ip);
 
             let mut socket = TcpSocket::new(self.network, &mut rx_buffer, &mut tx_buffer);
             if self.tcp_time_out != 0 {
