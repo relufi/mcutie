@@ -37,7 +37,7 @@ impl<M: RawMutex, T: Clean> Drop for PipeReader<'_, M, T> {
         self.pipe.inner.lock(|cell| {
             let mut inner = cell.borrow_mut();
             inner.state = State::WriteEnd;
-            inner.receiver_waker.wake();
+            inner.sender_waker.wake();
         })
     }
 }
