@@ -1,7 +1,6 @@
 use core::ops::Deref;
 
-pub(crate) use atomic16::assign_pid;
-use embassy_futures::select::{select, select3, Either};
+use embassy_futures::select::select3;
 use embassy_net::{dns::DnsQueryType, tcp::{TcpReader, TcpSocket, TcpWriter}, IpEndpoint, Stack};
 use embassy_sync::pubsub::WaitResult;
 use embassy_time::{Duration, Timer};
@@ -23,18 +22,6 @@ pub(crate) async fn subscribe<'a>(sender: &'a McutieSender) -> ControlSubscriber
     }
 }
 
-mod atomic16 {
-
-    use mqttrs::Pid;
-    use crate::McutieSender;
-
-    pub(crate) async fn assign_pid(sender: &'_ McutieSender) -> Pid {
-        let new_val = sender.count.get() + 1;
-        sender.count.set(new_val);
-        Pid::new() + new_val
-    }
-}
-
 pub(crate) async fn send_packet(sender: &'_ McutieSender,packet: Packet<'_>) -> Result<(), Error> {
     let mut writer = sender.sender.writer().await;
     match writer.write().encode_packet(&packet) {
@@ -53,32 +40,33 @@ pub(crate) async fn wait_for_publish(
     mut subscriber: ControlSubscriber<'_>,
     expected_pid: Pid,
 ) -> Result<(), Error> {
-    match select(
-        async {
-            loop {
-                match subscriber.next_message().await {
-                    WaitResult::Lagged(_) => {
-                        // Maybe we missed the message?
-                    }
-                    WaitResult::Message(ControlMessage::Published(published_pid)) => {
-                        if published_pid == expected_pid {
-                            return Ok(());
-                        }
-                    }
-                    _ => {}
+    loop {
+        match subscriber.next_message().await {
+            WaitResult::Lagged(_) => {
+                // Maybe we missed the message?
+            }
+            WaitResult::Message(ControlMessage::Published(published_pid)) => {
+                if published_pid == expected_pid {
+                    return Ok(());
                 }
             }
-        },
-        Timer::after_millis(CONFIRMATION_TIMEOUT),
-    )
-    .await
-    {
-        Either::First(r) => r,
-        Either::Second(_) => Err(Error::TimedOut),
+            _ => {}
+        }
     }
 }
 
 pub(crate) async fn publish(
+    sender: &'_ McutieSender,
+    topic_name: &str,
+    payload: &[u8],
+    qos: QoS,
+    retain: bool,
+) -> Result<(), Error> {
+    embassy_time::with_timeout(Duration::from_millis(CONFIRMATION_TIMEOUT * 2),publish_inner(sender,topic_name,payload,qos,retain)).await
+        .unwrap_or_else(|_| Err(Error::TimedOut))
+}
+
+pub(crate) async fn publish_inner(
     sender: &'_ McutieSender,
     topic_name: &str,
     payload: &[u8],
@@ -90,11 +78,11 @@ pub(crate) async fn publish(
     let (qospid, pid) = match qos {
         QoS::AtMostOnce => (QosPid::AtMostOnce, None),
         QoS::AtLeastOnce => {
-            let pid = assign_pid(sender).await;
+            let pid = sender.assign_pid();
             (QosPid::AtLeastOnce(pid), Some(pid))
         }
         QoS::ExactlyOnce => {
-            let pid = assign_pid(sender).await;
+            let pid = sender.assign_pid();
             (QosPid::ExactlyOnce(pid), Some(pid))
         }
     };

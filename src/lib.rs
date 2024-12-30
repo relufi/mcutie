@@ -82,7 +82,7 @@ enum ControlMessage {
 type ControlSubscriber<'a> = Subscriber<'a, NoopRawMutex, ControlMessage, 2, 5, 0>;
 pub struct McutieSender {
     sender: ConnectedPipe<NoopRawMutex,Payload>,
-    count: Cell<u16>,
+    count: Cell<Pid>,
     control_channel:  PubSubChannel<NoopRawMutex, ControlMessage, 2, 5, 0>,
 }
 
@@ -90,10 +90,17 @@ impl McutieSender {
     pub fn new() -> Self {
         Self {
             sender: ConnectedPipe::new(Payload::new()),
-            count: Cell::new(0),
+            count: Cell::new(Pid::new()),
             control_channel: PubSubChannel::new()
         }
     }
+
+    pub fn assign_pid(&self) -> Pid {
+        let new_val = self.count.get() + 1;
+        self.count.set(new_val);
+        new_val
+    }
+
 }
 
 /// Receives messages from the broker.
