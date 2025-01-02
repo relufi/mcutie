@@ -126,6 +126,7 @@ impl<M: RawMutex, T: Clean> ConnectedPipe<M, T> {
                         PipeWriter {
                             pipe: &*(self as *const ConnectedPipe<M, T>),
                             data: &mut *(&mut s.pending as *mut T),
+                            commit: true,
                         }
                     })
                 } else {
@@ -141,18 +142,31 @@ impl<M: RawMutex, T: Clean> ConnectedPipe<M, T> {
 pub(crate) struct PipeWriter<'a, M: RawMutex, T: Clean> {
     pipe: &'a ConnectedPipe<M, T>,
     data: &'a mut T,
+    commit: bool,
 }
 impl<M: RawMutex, T: Clean> PipeWriter<'_, M, T> {
     pub(crate) fn write(&mut self) -> &mut T {
         self.data
+    }
+
+    pub fn rollback(&mut self) {
+        self.commit = false;
+    }
+    pub fn commit(&mut self) {
+        self.commit = true;
     }
 }
 impl<M: RawMutex, T: Clean> Drop for PipeWriter<'_, M, T> {
     fn drop(&mut self) {
         self.pipe.inner.lock(|cell| {
             let mut inner = cell.borrow_mut();
-            inner.state = State::ReadEnd;
-            inner.receiver_waker.wake();
+            if self.commit {
+                inner.state = State::ReadEnd;
+                inner.receiver_waker.wake();
+            } else {
+                inner.state = State::WriteEnd;
+                inner.sender_waker.wake();
+            }
         })
     }
 }
