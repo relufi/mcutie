@@ -24,10 +24,12 @@ pub(crate) async fn send_packet(sender: &'_ McutieSender,packet: Packet<'_>) -> 
     let mut writer = sender.sender.writer().await;
     match writer.write().encode_packet(&packet) {
         Ok(()) => {
+            writer.commit();
             trace!("Pushing new packet for broker");
             Ok(())
         }
         Err(_) => {
+            writer.rollback();
             error!("Failed to send packet");
             Err(Error::PacketError)
         }

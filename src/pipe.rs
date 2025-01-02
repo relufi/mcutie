@@ -149,10 +149,10 @@ impl<M: RawMutex, T: Clean> PipeWriter<'_, M, T> {
         self.data
     }
 
-    pub fn rollback(&mut self) {
+    pub(crate) fn rollback(&mut self) {
         self.commit = false;
     }
-    pub fn commit(&mut self) {
+    pub(crate) fn commit(&mut self) {
         self.commit = true;
     }
 }
