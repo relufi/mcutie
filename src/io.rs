@@ -62,7 +62,7 @@ pub(crate) async fn publish(
     qos: QoS,
     retain: bool,
 ) -> Result<(), Error> {
-    embassy_time::with_timeout(Duration::from_millis(sender.confirmation_timeout.get() * 2),publish_inner(sender,topic_name,payload,qos,retain)).await
+    embassy_time::with_timeout(Duration::from_millis(sender.confirmation_timeout.get()),publish_inner(sender,topic_name,payload,qos,retain)).await
         .unwrap_or_else(|_| Err(Error::TimedOut))
 }
 
