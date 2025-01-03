@@ -84,7 +84,7 @@ pub struct McutieSender {
     sender: ConnectedPipe<NoopRawMutex,Payload>,
     count: Cell<Pid>,
     control_channel:  PubSubChannel<NoopRawMutex, ControlMessage, 2, 5, 0>,
-    confirmation_timeout: u64
+    confirmation_timeout: Cell<u64>
 }
 
 impl McutieSender {
@@ -94,7 +94,7 @@ impl McutieSender {
             sender: ConnectedPipe::new(Payload::new()),
             count: Cell::new(Pid::new()),
             control_channel: PubSubChannel::new(),
-            confirmation_timeout,
+            confirmation_timeout: Cell::new(confirmation_timeout),
         }
     }
 
@@ -104,6 +104,9 @@ impl McutieSender {
         new_val
     }
 
+    pub fn modify_timeout(&self,timeout: u64) {
+        self.confirmation_timeout.set(timeout);
+    }
 }
 
 /// Receives messages from the broker.

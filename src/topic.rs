@@ -152,7 +152,7 @@ impl<T: Deref<Target = str>> Topic<T> {
                         }
                     }
                 },
-                Timer::after_millis(sender.confirmation_timeout),
+                Timer::after_millis(sender.confirmation_timeout.get()),
             )
             .await
             {
@@ -203,7 +203,7 @@ impl<T: Deref<Target = str>> Topic<T> {
                         }
                     }
                 },
-                Timer::after_millis(sender.confirmation_timeout),
+                Timer::after_millis(sender.confirmation_timeout.get()),
             )
             .await
             {
