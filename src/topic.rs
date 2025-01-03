@@ -8,7 +8,7 @@ use mqttrs::{Packet, QoS, Subscribe, SubscribeReturnCodes, SubscribeTopic, Unsub
 
 #[cfg(feature = "serde")]
 use crate::publish::PublishJson;
-use crate::{io::{send_packet, subscribe}, publish::{PublishBytes, PublishDisplay}, ControlMessage, Error, McutieSender, TopicString, CONFIRMATION_TIMEOUT};
+use crate::{io::{send_packet, subscribe}, publish::{PublishBytes, PublishDisplay}, ControlMessage, Error, McutieSender, TopicString};
 
 /// An MQTT topic that is optionally prefixed with the device type and unique ID.
 /// Normally you will define all your application's topics as consts with static
@@ -152,7 +152,7 @@ impl<T: Deref<Target = str>> Topic<T> {
                         }
                     }
                 },
-                Timer::after_millis(CONFIRMATION_TIMEOUT),
+                Timer::after_millis(sender.confirmation_timeout),
             )
             .await
             {
@@ -203,7 +203,7 @@ impl<T: Deref<Target = str>> Topic<T> {
                         }
                     }
                 },
-                Timer::after_millis(CONFIRMATION_TIMEOUT),
+                Timer::after_millis(sender.confirmation_timeout),
             )
             .await
             {

@@ -7,7 +7,7 @@ use embassy_time::{Duration, Timer};
 use embedded_io_async::Write;
 use mqttrs::{decode_slice_with_len, Connect, ConnectReturnCode, LastWill, Packet, Pid, Protocol, Publish, QoS, QosPid};
 
-use crate::{fmt::Debug2Format, ControlMessage, ControlSubscriber, Error, IpDn, McutieReceiver, McutieSender, MqttMessage, Payload, Publishable, Topic, TopicString, CONFIRMATION_TIMEOUT, DEFAULT_BACKOFF, RESET_BACKOFF};
+use crate::{fmt::Debug2Format, ControlMessage, ControlSubscriber, Error, IpDn, McutieReceiver, McutieSender, MqttMessage, Payload, Publishable, Topic, TopicString, DEFAULT_BACKOFF, RESET_BACKOFF};
 
 
 pub(crate) async fn subscribe<'a>(sender: &'a McutieSender) -> ControlSubscriber<'a> {
@@ -62,7 +62,7 @@ pub(crate) async fn publish(
     qos: QoS,
     retain: bool,
 ) -> Result<(), Error> {
-    embassy_time::with_timeout(Duration::from_millis(CONFIRMATION_TIMEOUT * 2),publish_inner(sender,topic_name,payload,qos,retain)).await
+    embassy_time::with_timeout(Duration::from_millis(sender.confirmation_timeout * 2),publish_inner(sender,topic_name,payload,qos,retain)).await
         .unwrap_or_else(|_| Err(Error::TimedOut))
 }
 

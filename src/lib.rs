@@ -42,7 +42,7 @@ const DEFAULT_BACKOFF: u64 = 5000;
 // If the connection dropped then re-connect more quickly.
 const RESET_BACKOFF: u64 = 200;
 // How long to wait for the broker to confirm actions.
-const CONFIRMATION_TIMEOUT: u64 = 2000;
+// const CONFIRMATION_TIMEOUT: u64 = 2000;
 
 
 /// Various errors
@@ -84,14 +84,17 @@ pub struct McutieSender {
     sender: ConnectedPipe<NoopRawMutex,Payload>,
     count: Cell<Pid>,
     control_channel:  PubSubChannel<NoopRawMutex, ControlMessage, 2, 5, 0>,
+    confirmation_timeout: u64
 }
 
 impl McutieSender {
-    pub fn new() -> Self {
+    // 2000
+    pub fn new(confirmation_timeout: u64) -> Self {
         Self {
             sender: ConnectedPipe::new(Payload::new()),
             count: Cell::new(Pid::new()),
-            control_channel: PubSubChannel::new()
+            control_channel: PubSubChannel::new(),
+            confirmation_timeout,
         }
     }
 
