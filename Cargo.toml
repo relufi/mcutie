@@ -16,15 +16,15 @@ log = ["dep:log"]
 [dependencies]
 defmt = { version = "0.3.10", optional = true }
 log = { version = "0.4.22", optional = true }
-embassy-net = { version = "0.5.0", features = [
+embassy-net = { version = "0.6.0", features = [
   "dns",
   "medium-ip",
   "medium-ethernet",
   "proto-ipv4",
   "tcp",
 ] }
-embassy-time = "0.3.2"
-serde = { version = "1.0.216", default-features = false, features = [
+embassy-time = "0.4.0"
+serde = { version = "1.0.217", default-features = false, features = [
   "derive",
 ], optional = true }
 serde-json-core = { version = "0.6.0", optional = true }
@@ -36,8 +36,8 @@ embedded-io-async = "0.6.1"
 mqttrs = { git = "https://github.com/00imvj00/mqttrs.git", rev = "0f1ce9d1afa564392dc87ed1ec9801bcb457a579", default-features = false }
 heapless = "0.8.0"
 embedded-io = "0.6.1"
-once_cell = { version = "1.20.2", default-features = false, features = [
-  "critical-section",
-] }
-hex = { version = "0.4.3", default-features = false }
-pin-project = "1.1.7"
+#once_cell = { version = "1.20.2", default-features = false, features = [
+#  "critical-section",
+#] }
+#hex = { version = "0.4.3", default-features = false }
+#pin-project = "1.1.7"
