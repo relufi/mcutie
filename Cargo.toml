@@ -36,8 +36,8 @@ embedded-io-async = "0.6.1"
 mqttrs = { git = "https://github.com/00imvj00/mqttrs.git", rev = "0f1ce9d1afa564392dc87ed1ec9801bcb457a579", default-features = false }
 heapless = "0.8.0"
 embedded-io = "0.6.1"
-once_cell = { version = "1.20.2", default-features = false, features = [
-  "critical-section",
-] }
-hex = { version = "0.4.3", default-features = false }
-pin-project = "1.1.7"
+#once_cell = { version = "1.20.2", default-features = false, features = [
+#  "critical-section",
+#] }
+#hex = { version = "0.4.3", default-features = false }
+#pin-project = "1.1.7"
